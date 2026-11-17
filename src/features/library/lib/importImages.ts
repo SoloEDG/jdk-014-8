@@ -1,4 +1,4 @@
-import type { Chapter, ComicPage } from "../../../shared/document";
+import { DEFAULT_DIALOGUE, type Chapter, type ComicPage } from "../../../shared/document";
 import { makeId } from "../../../shared/commands";
 async function readImage(file: File): Promise<ComicPage> {
   if (
@@ -28,11 +28,12 @@ async function readImage(file: File): Promise<ComicPage> {
     title: file.name,
     image,
     ...dimensions,
+    layout: { source: "whole", revision: 0, updated: Date.now() },
     panels: [
       {
         id: makeId("panel"),
         rect: { x: 0, y: 0, ...dimensions },
-        dialogue: "在这一页，留下属于你的故事。",
+        dialogue: DEFAULT_DIALOGUE,
         speaker: "旁白",
         sound: "wind",
         duration: 5,

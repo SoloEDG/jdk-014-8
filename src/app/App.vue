@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import {
   BookOpen,
   ChevronRight,
@@ -10,12 +10,19 @@ import {
   Bookmark,
   Cloud,
   PanelLeftClose,
+  ScanSearch,
 } from "lucide-vue-next";
 import { LibraryPanel } from "../features/library";
 import { ChapterPanel } from "../features/chapters";
 import { ReaderStage, PanelStrip } from "../features/reader";
 import { AudioPanel } from "../features/audio";
 import { ProgressPanel } from "../features/progress";
+import {
+  ApplyDialog,
+  DetectionBanner,
+  PanelReview,
+} from "../features/detection";
+import { applySummaryText } from "../features/detection/lib/apply";
 import { useWorkspace } from "./workspace";
 const {
   doc,
@@ -24,8 +31,13 @@ const {
   library: l,
   chapters: c,
   audio: a,
+  detection: d,
+  pageTriggers,
+  addTrigger,
 } = useWorkspace();
 const current = r.current,
+  currentPage = computed(() => r.current.value.page),
+  currentPanel = computed(() => r.current.value.panel),
   at = r.location,
   mode = r.mode,
   metrics = p.metrics,
@@ -35,9 +47,64 @@ const current = r.current,
 const chapterIndex = computed(
   () => doc.value.chapters.findIndex((c) => c.id === at.value.chapterId) + 1,
 );
+const confirming = ref(false);
+const applyStats = ref("");
+const detectionRunning = computed(
+  () => d.phase.value === "loading" || d.phase.value === "ready",
+);
+const bookmarkRows = computed(() =>
+  bookmarks.value.map((mark) => ({
+    id: mark.id,
+    label: mark.label,
+    pageId: mark.location.pageId,
+    panelId: mark.location.panelId,
+  })),
+);
 function focus(id: string) {
   r.dispatch({ type: "panel", id });
   r.setMode("panel");
+}
+function startReview() {
+  if (d.phase.value === "ready" || d.phase.value === "review" || d.reviewOpen.value)
+    d.enterReview();
+  else if (currentPage.value) void d.start(currentPage.value.id, d.mode.value);
+}
+function beginApply() {
+  if (!currentPage.value) return;
+  confirming.value = true;
+}
+function confirmApply() {
+  const stats = d.apply();
+  confirming.value = false;
+  if (stats) applyStats.value = applySummaryText(stats);
+}
+function cancelApply() {
+  confirming.value = false;
+}
+function saveDialogue(id: string, value: string) {
+  const page = r.current.value.page;
+  const panel = page?.panels.find((item) => item.id === id);
+  if (!panel) return;
+  panel.dialogue = value;
+  panel.dialogueEdited = true;
+  panel.needsReview = false;
+}
+function saveSpeaker(id: string, value: string) {
+  const page = r.current.value.page;
+  const panel = page?.panels.find((item) => item.id === id);
+  if (!panel) return;
+  panel.speaker = value;
+  panel.dialogueEdited = true;
+}
+function saveCueDialogue(text: string, speaker: string) {
+  if (!currentPanel.value) return;
+  saveDialogue(currentPanel.value.id, text);
+  saveSpeaker(currentPanel.value.id, speaker);
+}
+function toggleTrigger() {
+  const existing = pageTriggers.value.find((t) => t.panelId === at.value.panelId);
+  if (existing) p.removeTrigger(existing.id);
+  else addTrigger();
 }
 </script>
 <template>
@@ -105,6 +172,29 @@ function focus(id: string) {
             <h2>{{ current.chapter?.title }}</h2>
           </div>
           <div class="reader-tools">
+            <button
+              class="detect-toggle"
+              :class="{ active: detectionRunning || d.reviewOpen.value }"
+              :disabled="!currentPage || d.phase.value === 'loading'"
+              :title="
+                d.reviewOpen.value
+                  ? '回到分镜框审阅'
+                  : '在浏览器里找出分镜框并建议阅读顺序'
+              "
+              @click="startReview"
+            >
+              <ScanSearch :size="14" />
+              {{
+                d.phase.value === "loading"
+                  ? `识别 ${Math.round(d.progress.value * 100)}%`
+                  : d.phase.value === "ready"
+                    ? "查看识别建议"
+                    : d.reviewOpen.value
+                      ? "继续审阅"
+                      : "识别分镜框"
+              }}
+            </button>
+            <span class="tool-divider"></span>
             <div class="mode-switch">
               <button
                 :class="{ active: mode === 'page' }"
@@ -129,15 +219,36 @@ function focus(id: string) {
             </button>
           </div>
         </div>
+        <DetectionBanner
+          class="detect-banner-slot"
+          :phase="d.phase.value"
+          :progress="d.progress.value"
+          :mode="d.mode.value"
+          :result="d.result.value"
+          :page-count="metrics.pageCount"
+          :panel-count="currentPage?.panels.length ?? 0"
+          :low-confidence="d.lowConfidence.value"
+          :stale="d.stale.value"
+          :error="d.error.value"
+          @review="d.enterReview()"
+          @cancel="d.cancel()"
+          @retry="d.start(d.pageId.value, $event)"
+        />
+        <p v-if="applyStats" class="detect-applied" role="status">
+          已应用布局：{{ applyStats }}
+        </p>
         <ReaderStage
-          v-if="current.page && current.panel"
-          :page="current.page"
-          :panel="current.panel"
+          v-if="currentPage && currentPanel"
+          :page="currentPage"
+          :panel="currentPanel"
           :location="at"
           :mode="mode"
+          :editing="mode === 'panel'"
           @move="r.dispatch({ type: 'move', delta: $event })"
           @pan="r.pan"
           @panel="focus"
+          @dialogue="saveDialogue"
+          @speaker="saveSpeaker"
         />
         <div class="page-position">
           <span>{{ current.chapter?.subtitle }}</span>
@@ -149,9 +260,10 @@ function focus(id: string) {
           <span>阅读位置自动保存 <i></i></span>
         </div>
         <PanelStrip
-          v-if="current.page"
-          :page="current.page"
+          v-if="currentPage"
+          :page="currentPage"
           :active="at.panelId"
+          :triggers="pageTriggers"
           @select="focus"
         />
       </main>
@@ -162,9 +274,15 @@ function focus(id: string) {
           :dialogue="a.dialogue.value"
           :cue="cue"
           :error="a.error.value"
+          :triggers="pageTriggers"
+          :panel-id="at.panelId"
+          :can-trigger="Boolean(currentPanel)"
           @toggle="a.toggle"
           @volume="a.volume.value = $event"
           @dialogue="a.dialogue.value = !a.dialogue.value"
+          @trigger="toggleTrigger"
+          @remove-trigger="p.removeTrigger"
+          @save-dialogue="saveCueDialogue"
         /><ProgressPanel
           :bookmarks="bookmarks"
           :percent="metrics.percent"
@@ -186,5 +304,53 @@ function focus(id: string) {
       ><span>PANEL · 为每一格想象而生</span
       ><span>图片导入 · 本地存储 · 无需联网</span>
     </footer>
+    <PanelReview
+      v-if="d.reviewOpen.value && currentPage"
+      :page="currentPage"
+      :panels="d.panels.value"
+      :selected="d.selected.value"
+      :mode="d.mode.value"
+      :phase="d.phase.value"
+      :progress="d.progress.value"
+      :error="d.error.value"
+      :notice="d.notice.value"
+      :stale="d.stale.value"
+      :low-confidence="d.lowConfidence.value"
+      :result="d.result.value"
+      @start="d.start(d.pageId.value, $event)"
+      @cancel="d.cancel()"
+      @close="d.close()"
+      @back="d.dismiss()"
+      @keep-whole="d.keepWhole()"
+      @select="d.toggleSelect"
+      @merge="d.mergeSelected"
+      @split="d.splitSelected"
+      @add="d.addManual"
+      @update="d.updateRect"
+      @order="d.moveOrder"
+      @auto-order="d.autoOrder"
+      @dialogue="(id, value) => d.setDialogue(id, value)"
+      @speaker="(id, value) => d.setSpeaker(id, value)"
+      @confirm-panel="d.markReviewed"
+      @remove="d.removeSelected"
+      @apply="beginApply"
+      @mode="d.setMode"
+    />
+    <ApplyDialog
+      v-if="confirming && currentPage"
+      :page="currentPage"
+      :panels="d.panels.value"
+      :bookmarks="bookmarkRows"
+      :triggers="pageTriggers"
+      :current-panel-id="at.panelId"
+      :low-confidence="d.lowConfidence.value"
+      :stats-text="
+        d.result.value
+          ? `建议 ${d.panels.value.length} 格，参考可信度 ${Math.round(d.result.value.confidence * 100)}%`
+          : `手动布局 ${d.panels.value.length} 格`
+      "
+      @confirm="confirmApply"
+      @cancel="cancelApply"
+    />
   </div>
 </template>

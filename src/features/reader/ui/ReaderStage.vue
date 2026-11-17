@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { ChevronLeft, ChevronRight, Maximize2 } from "lucide-vue-next";
+import { nextTick, ref, watch } from "vue";
+import { ChevronLeft, ChevronRight, Maximize2, Pencil, Check } from "lucide-vue-next";
 import type {
   ComicPage,
   Panel,
   ReadingLocation,
   ReadingMode,
 } from "../../../shared/document";
-import { frameStyle } from "../lib/viewport";
+import PanelCrop from "../../../shared/ui/PanelCrop.vue";
 const props = defineProps<{
   page: ComicPage;
   panel: Panel;
@@ -18,8 +18,14 @@ const emit = defineEmits<{
   move: [delta: number];
   pan: [x: number, y: number];
   panel: [id: string];
+  dialogue: [id: string, value: string];
+  speaker: [id: string, value: string];
 }>();
 const stage = ref<HTMLElement>();
+const editing = ref(false);
+const draftText = ref("");
+const draftSpeaker = ref("");
+const textarea = ref<HTMLTextAreaElement>();
 let drag: { x: number; y: number; px: number; py: number } | null = null;
 function down(e: PointerEvent) {
   if (props.location.zoom <= 1) return;
@@ -39,6 +45,26 @@ function fullscreen() {
   if (document.fullscreenElement) void document.exitFullscreen();
   else void stage.value?.requestFullscreen();
 }
+function beginEdit() {
+  editing.value = true;
+  draftText.value = props.panel.dialogue;
+  draftSpeaker.value = props.panel.speaker;
+  void nextTick(() => textarea.value?.focus());
+}
+function commit() {
+  if (!editing.value) return;
+  if (draftText.value !== props.panel.dialogue)
+    emit("dialogue", props.panel.id, draftText.value);
+  if (draftSpeaker.value !== props.panel.speaker)
+    emit("speaker", props.panel.id, draftSpeaker.value);
+  editing.value = false;
+}
+watch(
+  () => props.panel.id,
+  () => {
+    editing.value = false;
+  },
+);
 </script>
 <template>
   <section ref="stage" class="reader-stage">
@@ -67,15 +93,39 @@ function fullscreen() {
       <div
         class="comic-image"
         :style="{
-          ...frameStyle(page, panel, mode),
           transform: `translate(${location.x}px, ${location.y}px) scale(${location.zoom})`,
         }"
       >
+        <div
+          class="comic-fit"
+          :style="{
+            aspectRatio:
+              mode === 'page'
+                ? `${page.width}/${page.height}`
+                : `${panel.rect.width}/${panel.rect.height}`,
+          }"
+        >
+          <PanelCrop
+            v-if="mode === 'panel'"
+            :page="page"
+            :rect="panel.rect"
+            fit="slice"
+          />
+          <img
+            v-else
+            class="page-image"
+            :src="page.image"
+            alt=""
+            draggable="false"
+          />
+        </div>
+        <div class="comic-overlay">
         <template v-if="mode === 'page'"
           ><button
             v-for="(p, i) in page.panels"
             :key="p.id"
             class="panel-hotspot"
+            :class="{ edited: p.dialogueEdited, pending: p.needsReview }"
             :style="{
               left: `${(p.rect.x / page.width) * 100}%`,
               top: `${(p.rect.y / page.height) * 100}%`,
@@ -88,6 +138,7 @@ function fullscreen() {
             <span>{{ String(i + 1).padStart(2, "0") }}</span>
           </button></template
         >
+        </div>
       </div>
     </div>
     <button
@@ -102,6 +153,39 @@ function fullscreen() {
         >{{ mode === "page" ? "整页浏览" : "逐格沉浸" }} <b>·</b>
         {{ page.title }}</span
       ><span>← → 翻阅 <b>·</b> 双击分镜进入</span>
+    </div>
+    <div v-if="mode === 'panel'" class="stage-dialogue">
+      <template v-if="editing">
+        <input
+          v-model="draftSpeaker"
+          class="stage-speaker-input"
+          aria-label="说话人"
+          @keydown.enter.prevent="commit"
+          @keydown.esc.prevent="editing = false"
+        />
+        <textarea
+          ref="textarea"
+          v-model="draftText"
+          class="stage-dialogue-input"
+          rows="2"
+          aria-label="对白"
+          @keydown.esc.prevent="editing = false"
+          @blur="commit"
+        ></textarea>
+        <button class="stage-dialogue-save" @click="commit">
+          <Check :size="12" /> 保存
+        </button>
+      </template>
+      <template v-else>
+        <p>“{{ panel.dialogue }}”</p>
+        <button
+          class="stage-dialogue-edit"
+          title="修改这段对白；布局识别结果到达时会保留你的修改"
+          @click="beginEdit"
+        >
+          <Pencil :size="12" /> 改对白
+        </button>
+      </template>
     </div>
   </section>
 </template>

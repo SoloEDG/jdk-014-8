@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { ComicPage } from "../../../shared/document";
-import { frameStyle } from "../lib/viewport";
-defineProps<{ page: ComicPage; active: string }>();
+import { Bookmark } from "lucide-vue-next";
+import type { ComicPage, SoundTrigger } from "../../../shared/document";
+import PanelCrop from "../../../shared/ui/PanelCrop.vue";
+defineProps<{ page: ComicPage; active: string; triggers: SoundTrigger[] }>();
 const emit = defineEmits<{ select: [id: string] }>();
 </script>
 <template>
@@ -17,11 +18,25 @@ const emit = defineEmits<{ select: [id: string] }>();
         :class="{ selected: active === panel.id }"
         @click="emit('select', panel.id)"
       >
-        <div :style="frameStyle(page, panel, 'panel')"></div>
+        <PanelCrop class="strip-thumb" :page="page" :rect="panel.rect" />
         <span
           ><b>{{ String(i + 1).padStart(2, "0") }}</b> {{ panel.speaker }}
-          <small>{{ panel.duration }}s</small></span
+          <small>{{ panel.duration }}s</small>
+          <Bookmark v-if="panel.dialogueEdited" :size="9" class="panel-mark" />
+        </span>
+        <span
+          v-if="panel.needsReview"
+          class="panel-needs"
+          title="对白归属待确认"
+          >待确认</span
         >
+        <span
+          v-if="triggers.some((t) => t.panelId === panel.id)"
+          class="panel-cue"
+          title="这个分镜有声音触发点"
+        >
+          ♪
+        </span>
       </button>
     </div>
   </section>

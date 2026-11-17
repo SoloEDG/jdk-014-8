@@ -2,12 +2,14 @@ import type {
   ComicDocument,
   Bookmark,
   ReadingLocation,
+  SoundTrigger,
 } from "../../../shared/document";
 const KEY = "panel-jdk014-v1";
 export interface SavedSession {
   document: ComicDocument;
   location: ReadingLocation;
   bookmarks: Bookmark[];
+  triggers: SoundTrigger[];
 }
 export function readSession(): SavedSession | null {
   try {
@@ -27,6 +29,7 @@ export function readSession(): SavedSession | null {
       for (const p of c.pages)
         if (!p.panels?.length || typeof p.image !== "string") return null;
     }
+    if (!Array.isArray(value.triggers)) value.triggers = [];
     return value;
   } catch {
     return null;
